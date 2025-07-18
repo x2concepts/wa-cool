@@ -57,7 +57,7 @@ function parseContact(from) {
         phoneNumber: cleanNumber,
         isGroup: isGroup,
         contactId: from,
-        displayNumber: `+${cleanNumber.replace(/(\d{2})(\d{3})(\d{3})(\d{3})/, '$1 $2 $3 $4')}`
+        displayNumber: isGroup ? `Groep: ${cleanNumber}` : `+${cleanNumber.replace(/(\d{2})(\d{3})(\d{3})(\d{3})/, '$1 $2 $3 $4')}`
     };
 }
 
@@ -83,17 +83,12 @@ client.on('ready', () => {
     console.log('✅ WhatsApp AI Agent is klaar!');
     console.log('🤖 AI Agent webhook:', N8N_WEBHOOK_URL);
     console.log('⚡ Alleen berichten die beginnen met ! worden doorgestuurd');
+    console.log('📱 Groepsberichten met ! commands zijn toegestaan');
 });
 
 client.on('message', async msg => {
     // Negeer berichten van jezelf
     if (msg.fromMe) return;
-    
-    // Negeer groepsberichten (optioneel)
-    if (msg.from.includes('@g.us')) {
-        console.log('⚠️ Groepsbericht genegeerd');
-        return;
-    }
     
     // ALLEEN berichten die beginnen met ! worden doorgestuurd
     if (!msg.body.startsWith('!')) {
@@ -106,6 +101,7 @@ client.on('message', async msg => {
     
     console.log('⚡ COMMAND BERICHT ONTVANGEN');
     console.log('Van:', contact.displayNumber);
+    console.log('Type:', contact.isGroup ? 'Groepsbericht' : 'Privébericht');
     console.log('Command:', msg.body);
     console.log('Tijd:', new Date().toLocaleString('nl-NL'));
     console.log('→ Doorsturen naar AI agent...');
@@ -192,7 +188,7 @@ const server = http.createServer(async (req, res) => {
             status: 'ok', 
             timestamp: new Date().toISOString(),
             aiAgent: N8N_WEBHOOK_URL,
-            mode: 'AI Agent Mode - ! commands only',
+            mode: 'AI Agent Mode - ! commands only (Groups enabled)',
             endpoints: {
                 health: '/health',
                 sendMessage: '/send-message'
