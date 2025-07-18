@@ -64,9 +64,9 @@ function parseContact(from) {
 // Functie om berichten te versturen (wordt aangeroepen door n8n)
 async function sendWhatsAppMessage(phoneNumber, message) {
     try {
-        const contact = await client.getContactById(`${phoneNumber}@c.us`);
-        await contact.sendMessage(message);
-        console.log(`✅ Bericht verzonden naar ${phoneNumber}`);
+        const chatId = `${phoneNumber}@c.us`;
+        await client.sendMessage(chatId, message);
+        console.log(`✅ Bericht succesvol verzonden naar ${phoneNumber}`);
         return true;
     } catch (error) {
         console.error(`❌ Fout bij verzenden naar ${phoneNumber}:`, error.message);
