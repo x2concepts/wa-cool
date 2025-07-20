@@ -135,6 +135,57 @@ client.on('message', async msg => {
     }
 });
 
+// Security configuration
+const SECURITY_ENABLED = process.env.SECURITY_ENABLED === 'true';
+const API_KEY = process.env.API_KEY;
+const ALLOWED_IPS = process.env.ALLOWED_IPS ? process.env.ALLOWED_IPS.split(',').map(ip => ip.trim()) : [];
+
+// Security middleware functions
+function getClientIP(req) {
+    return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
+           req.headers['x-real-ip'] || 
+           req.connection.remoteAddress || 
+           req.socket.remoteAddress ||
+           (req.connection.socket ? req.connection.socket.remoteAddress : null);
+}
+
+function isIPAllowed(clientIP) {
+    if (!SECURITY_ENABLED || ALLOWED_IPS.length === 0) return true;
+    
+    // Remove IPv6 prefix if present
+    const cleanIP = clientIP?.replace(/^::ffff:/, '');
+    return ALLOWED_IPS.includes(cleanIP) || ALLOWED_IPS.includes('127.0.0.1');
+}
+
+function isAPIKeyValid(req) {
+    if (!SECURITY_ENABLED || !API_KEY) return true;
+    
+    const providedKey = req.headers['x-api-key'];
+    return providedKey === API_KEY;
+}
+
+function validateSecurity(req, res) {
+    const clientIP = getClientIP(req);
+    
+    // Check IP whitelist
+    if (!isIPAllowed(clientIP)) {
+        console.log(`🚫 IP blocked: ${clientIP}`);
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'IP not allowed' }));
+        return false;
+    }
+    
+    // Check API key
+    if (!isAPIKeyValid(req)) {
+        console.log(`🔑 Invalid API key from IP: ${clientIP}`);
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid or missing API key' }));
+        return false;
+    }
+    
+    return true;
+}
+
 // HTTP server voor n8n om berichten terug te sturen
 const http = require('http');
 const url = require('url');
@@ -155,6 +206,9 @@ const server = http.createServer(async (req, res) => {
     }
     
     if (req.method === 'POST' && parsedUrl.pathname === '/send-message') {
+        // Validate security for protected endpoint
+        if (!validateSecurity(req, res)) return;
+        
         let body = '';
         req.on('data', chunk => {
             body += chunk.toString();
@@ -189,9 +243,14 @@ const server = http.createServer(async (req, res) => {
             timestamp: new Date().toISOString(),
             aiAgent: N8N_WEBHOOK_URL,
             mode: 'AI Agent Mode - ! commands only (Groups enabled)',
+            security: {
+                enabled: SECURITY_ENABLED,
+                ipWhitelist: SECURITY_ENABLED ? ALLOWED_IPS.length > 0 : false,
+                apiKey: SECURITY_ENABLED ? !!API_KEY : false
+            },
             endpoints: {
                 health: '/health',
-                sendMessage: '/send-message'
+                sendMessage: '/send-message (protected)'
             }
         }));
     }
@@ -205,6 +264,15 @@ server.listen(PORT, () => {
     console.log(`🚀 WhatsApp AI Agent server draait op poort ${PORT}`);
     console.log(`📡 n8n kan berichten sturen naar: https://wa.theagentfactory.nl/send-message`);
     console.log(`🔧 Health check: https://wa.theagentfactory.nl/health`);
+    
+    // Security status logging
+    if (SECURITY_ENABLED) {
+        console.log(`🔒 Security ENABLED`);
+        console.log(`🔑 API Key: ${API_KEY ? 'Configured' : 'Missing'}`);
+        console.log(`🌐 Allowed IPs: ${ALLOWED_IPS.length > 0 ? ALLOWED_IPS.join(', ') : 'None configured'}`);
+    } else {
+        console.log(`⚠️  Security DISABLED - Set SECURITY_ENABLED=true to enable`);
+    }
 });
 
 client.on('disconnected', (reason) => {
