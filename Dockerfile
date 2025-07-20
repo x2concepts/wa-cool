@@ -32,5 +32,10 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:3000/health || exit 1
 
+# Environment variables for security (override in deployment)
+ENV SECURITY_ENABLED=false
+ENV API_KEY=""
+ENV ALLOWED_IPS=""
+
 # Start de app
 CMD ["npm", "start"]
