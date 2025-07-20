@@ -22,8 +22,9 @@ RUN npm install --production
 # Kopieer app source
 COPY . .
 
-# Maak session directory
-RUN mkdir -p session
+# Maak session directory (will be mounted as volume)
+RUN mkdir -p /app/session
+VOLUME ["/app/session"]
 
 # Expose port
 EXPOSE 3000
