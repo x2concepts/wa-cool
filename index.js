@@ -3,7 +3,7 @@ const qrcode = require('qrcode-terminal');
 
 const client = new Client({
     authStrategy: new LocalAuth({
-        dataPath: './session'
+        dataPath: process.env.SESSION_PATH || './session'
     }),
     puppeteer: {
         headless: true,
