@@ -22,24 +22,44 @@ const client = new Client({
 
 // n8n webhook URL - dit wordt je eigen n8n instantie
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL || 'https://your-n8n.com/webhook/whatsapp-ai-agent';
+const N8N_AUTH_HEADER = process.env.N8N_AUTH_HEADER || '';
+const N8N_AUTH_VALUE = process.env.N8N_AUTH_VALUE || '';
 
 // Functie om berichten naar n8n AI agent te sturen
 async function sendToAIAgent(messageData) {
     try {
+        // Prepare headers
+        const headers = {
+            'Content-Type': 'application/json',
+        };
+        
+        // Add n8n authentication if configured
+        if (N8N_AUTH_HEADER && N8N_AUTH_VALUE) {
+            headers[N8N_AUTH_HEADER] = N8N_AUTH_VALUE;
+            console.log(`🔑 Adding n8n auth: ${N8N_AUTH_HEADER}`);
+        }
+        
+        console.log('📤 Sending to n8n:', JSON.stringify(messageData, null, 2));
+        console.log('🌐 Headers:', JSON.stringify(headers, null, 2));
+        
         const response = await fetch(N8N_WEBHOOK_URL, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
+            headers: headers,
             body: JSON.stringify(messageData)
         });
+        
+        console.log('📥 Response status:', response.status);
+        console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
         
         if (response.ok) {
             const result = await response.json();
             console.log('✅ Bericht verwerkt door AI agent');
+            console.log('📥 Response data:', JSON.stringify(result, null, 2));
             return result;
         } else {
+            const errorText = await response.text();
             console.error('❌ AI agent error:', response.status, response.statusText);
+            console.error('❌ Error body:', errorText);
             return null;
         }
     } catch (error) {
