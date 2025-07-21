@@ -1,16 +1,16 @@
 {
-  "name": "whatsapp-bot",
+  "name": "whatsapp-n8n-gateway",
   "version": "1.0.0",
-  "description": "WhatsApp bot using whatsapp-web.js",
+  "description": "A secure gateway to connect whatsapp-web.js with n8n.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "whatsapp-web.js": "^1.23.0",
-    "qrcode-terminal": "^0.12.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "axios": "^1.7.2",
+    "body-parser": "^1.20.2",
+    "express": "^4.19.2",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "^1.23.0"
   }
 }
