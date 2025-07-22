@@ -1,222 +1,308 @@
-const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+// Enhanced WhatsApp service met typing support
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const express = require('express');
-const bodyParser = require('body-parser');
-const qrcode = require('qrcode-terminal');
-const axios = require('axios');
-
-// --- Configuration via Environment Variables ---
-// Secure and flexible for deployment
-const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
-const GATEWAY_API_KEY = process.env.GATEWAY_API_KEY;
-const PORT = process.env.PORT || 3000;
-
-if (!N8N_WEBHOOK_URL || !GATEWAY_API_KEY) {
-    console.error("Error: N8N_WEBHOOK_URL and GATEWAY_API_KEY must be set as environment variables.");
-    process.exit(1);
-}
-
-// --- Set up Express Server ---
-// For receiving commands from n8n
 const app = express();
-app.use(bodyParser.json());
 
-// --- Initialize WhatsApp Client ---
+app.use(express.json());
+
 const client = new Client({
-    // Use LocalAuth to save the session locally.
-    // The 'dataPath' refers to a folder that we make persistent with Docker.
-    authStrategy: new LocalAuth({ dataPath: './wweb_session' }),
+    authStrategy: new LocalAuth(),
     puppeteer: {
-        // Essential for running in a Docker container
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
     }
 });
 
-// --- WhatsApp Event Handlers ---
+let isReady = false;
 
-// 1. Generate QR code for the initial login
-client.on('qr', qr => {
-    console.log("Scan the QR code with your phone:");
-    qrcode.generate(qr, { small: true });
+client.on('qr', (qr) => {
+    console.log('QR RECEIVED', qr);
 });
 
-// 2. Confirmation after successful authentication
-client.on('authenticated', () => {
-    console.log('✅ Authenticated!');
-});
-
-// 3. Client is ready for use
 client.on('ready', () => {
-    console.log('🚀 WhatsApp Gateway is ready!');
+    console.log('WhatsApp Client is ready!');
+    isReady = true;
 });
 
-// 4. Receive incoming message and forward it to n8n
-client.on('message', async message => {
-    // Prevent the bot from replying to itself or processing status updates
-    if (message.from === 'status@broadcast' || message.author) return;
+client.on('disconnected', (reason) => {
+    console.log('Client was disconnected', reason);
+    isReady = false;
+});
 
-    console.log(`Message received from ${message.from}: "${message.body}"`);
-
+// Enhanced send message endpoint met typing support
+app.post('/send-message', async (req, res) => {
     try {
-        // Forward the relevant data to the n8n webhook
-        await axios.post(N8N_WEBHOOK_URL, {
-            from: message.from, // e.g., 31612345678@c.us
-            text: message.body,
-            messageId: message.id._serialized // IMPORTANT: Forward the messageId for replies/reactions
-        }, {
-            headers: { 'X-API-Key': GATEWAY_API_KEY } // Secure the webhook
+        if (!isReady) {
+            return res.status(503).json({ 
+                error: 'WhatsApp client not ready',
+                status: 'not_ready' 
+            });
+        }
+
+        const { 
+            to, 
+            text, 
+            typing_duration = 2000,  // Default 2 seconden typing
+            enable_typing = true,
+            message_delay = 0        // Extra delay na typing
+        } = req.body;
+
+        if (!to || !text) {
+            return res.status(400).json({ 
+                error: 'Missing required fields: to, text' 
+            });
+        }
+
+        // Format number voor WhatsApp
+        let chatId = to;
+        if (!to.includes('@')) {
+            chatId = to + '@c.us';
+        }
+
+        console.log(`Sending message to ${chatId}: ${text}`);
+
+        // Get chat object
+        const chat = await client.getChatById(chatId);
+        
+        if (!chat) {
+            return res.status(404).json({ 
+                error: 'Chat not found',
+                chatId: chatId
+            });
+        }
+
+        let typingPromise = null;
+
+        // Start typing indicator als enabled
+        if (enable_typing && typing_duration > 0) {
+            console.log(`Starting typing indicator for ${typing_duration}ms`);
+            
+            // Send typing state
+            await chat.sendStateTyping();
+            
+            // Create promise dat na X tijd stopt
+            typingPromise = new Promise(resolve => {
+                setTimeout(() => {
+                    console.log('Typing duration completed');
+                    resolve();
+                }, typing_duration);
+            });
+
+            // Wait for typing duration
+            await typingPromise;
+        }
+
+        // Extra delay na typing (voor realisme)
+        if (message_delay > 0) {
+            await new Promise(resolve => setTimeout(resolve, message_delay));
+        }
+
+        // Send actual message
+        const message = await chat.sendMessage(text);
+        
+        console.log('Message sent successfully:', message.id._serialized);
+
+        res.json({ 
+            success: true,
+            messageId: message.id._serialized,
+            chatId: chatId,
+            typing_used: enable_typing,
+            typing_duration: enable_typing ? typing_duration : 0,
+            timestamp: new Date().toISOString()
         });
+
     } catch (error) {
-        console.error("Error forwarding message to n8n:", error.message);
+        console.error('Error sending message:', error);
+        
+        res.status(500).json({ 
+            error: 'Failed to send message',
+            details: error.message,
+            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
     }
+});
+
+// Endpoint voor alleen typing indicator (zonder bericht)
+app.post('/send-typing', async (req, res) => {
+    try {
+        if (!isReady) {
+            return res.status(503).json({ 
+                error: 'WhatsApp client not ready' 
+            });
+        }
+
+        const { to, duration = 3000, state = 'typing' } = req.body;
+
+        if (!to) {
+            return res.status(400).json({ 
+                error: 'Missing required field: to' 
+            });
+        }
+
+        let chatId = to;
+        if (!to.includes('@')) {
+            chatId = to + '@c.us';
+        }
+
+        const chat = await client.getChatById(chatId);
+
+        if (!chat) {
+            return res.status(404).json({ 
+                error: 'Chat not found' 
+            });
+        }
+
+        // Choose state type
+        if (state === 'recording') {
+            await chat.sendStateRecording();
+        } else {
+            await chat.sendStateTyping();
+        }
+
+        console.log(`Sent ${state} state for ${duration}ms to ${chatId}`);
+
+        // Auto-clear na duration
+        if (duration > 0) {
+            setTimeout(async () => {
+                try {
+                    await chat.clearState();
+                    console.log(`Cleared ${state} state for ${chatId}`);
+                } catch (err) {
+                    console.error('Error clearing state:', err.message);
+                }
+            }, duration);
+        }
+
+        res.json({ 
+            success: true,
+            chatId: chatId,
+            state: state,
+            duration: duration,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error sending typing state:', error);
+        res.status(500).json({ 
+            error: 'Failed to send typing state',
+            details: error.message 
+        });
+    }
+});
+
+// Bulk send met typing indicators
+app.post('/send-bulk-messages', async (req, res) => {
+    try {
+        if (!isReady) {
+            return res.status(503).json({ 
+                error: 'WhatsApp client not ready' 
+            });
+        }
+
+        const { 
+            messages, 
+            delay_between = 3000,     // Delay tussen berichten
+            typing_duration = 2000,   // Typing duration per bericht
+            enable_typing = true 
+        } = req.body;
+
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return res.status(400).json({ 
+                error: 'Messages must be a non-empty array' 
+            });
+        }
+
+        const results = [];
+
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            
+            if (!msg.to || !msg.text) {
+                results.push({
+                    index: i,
+                    error: 'Missing to or text field',
+                    success: false
+                });
+                continue;
+            }
+
+            try {
+                let chatId = msg.to;
+                if (!msg.to.includes('@')) {
+                    chatId = msg.to + '@c.us';
+                }
+
+                const chat = await client.getChatById(chatId);
+
+                // Typing indicator
+                if (enable_typing) {
+                    await chat.sendStateTyping();
+                    await new Promise(resolve => 
+                        setTimeout(resolve, typing_duration)
+                    );
+                }
+
+                // Send message
+                const message = await chat.sendMessage(msg.text);
+
+                results.push({
+                    index: i,
+                    success: true,
+                    messageId: message.id._serialized,
+                    chatId: chatId
+                });
+
+                console.log(`Bulk message ${i + 1}/${messages.length} sent to ${chatId}`);
+
+                // Delay tussen berichten (behalve laatste)
+                if (i < messages.length - 1 && delay_between > 0) {
+                    await new Promise(resolve => 
+                        setTimeout(resolve, delay_between)
+                    );
+                }
+
+            } catch (error) {
+                results.push({
+                    index: i,
+                    success: false,
+                    error: error.message,
+                    chatId: msg.to
+                });
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length;
+        
+        res.json({
+            success: true,
+            total_messages: messages.length,
+            successful: successCount,
+            failed: messages.length - successCount,
+            results: results,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Error in bulk send:', error);
+        res.status(500).json({ 
+            error: 'Bulk send failed',
+            details: error.message 
+        });
+    }
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: isReady ? 'ready' : 'not_ready',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`WhatsApp service running on port ${PORT}`);
 });
 
 client.initialize();
-
-
-// ===================================================================================
-// --- API Endpoints for n8n ---
-// ===================================================================================
-
-/**
- * @description Sends a simple text message.
- * @param {string} to - The chat ID (e.g., 31612345678@c.us)
- * @param {string} text - The message content.
- */
-app.post('/send-message', async (req, res) => {
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey !== GATEWAY_API_KEY) {
-        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
-    }
-
-    const { to, text } = req.body;
-    if (!to || !text) {
-        return res.status(400).send({ status: 'error', message: 'Parameters "to" and "text" are required.' });
-    }
-
-    try {
-        await client.sendMessage(to, text);
-        res.status(200).send({ status: 'success', message: 'Message sent successfully.' });
-    } catch (error) {
-        console.error("Error sending message:", error.message);
-        res.status(500).send({ status: 'error', message: 'Failed to send message.' });
-    }
-});
-
-/**
- * @description Sends a reply to a specific message.
- * @param {string} messageId - The serialized ID of the message to reply to.
- * @param {string} text - The reply content.
- */
-app.post('/reply-to-message', async (req, res) => {
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey !== GATEWAY_API_KEY) {
-        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
-    }
-
-    const { messageId, text } = req.body;
-    if (!messageId || !text) {
-        return res.status(400).send({ status: 'error', message: 'Parameters "messageId" and "text" are required.' });
-    }
-
-    try {
-        const messageToReply = await client.getMessageById(messageId);
-        if (messageToReply) {
-            await messageToReply.reply(text);
-            res.status(200).send({ status: 'success', message: 'Reply sent successfully.' });
-        } else {
-            res.status(404).send({ status: 'error', message: 'Original message not found.' });
-        }
-    } catch (error) {
-        console.error("Error sending reply:", error.message);
-        res.status(500).send({ status: 'error', message: 'Failed to send reply.' });
-    }
-});
-
-
-/**
- * @description Sends an image from a URL with an optional caption.
- * @param {string} to - The chat ID.
- * @param {string} imageUrl - The public URL of the image to send.
- * @param {string} [caption] - Optional text to send with the image.
- */
-app.post('/send-image', async (req, res) => {
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey !== GATEWAY_API_KEY) {
-        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
-    }
-
-    const { to, imageUrl, caption } = req.body;
-    if (!to || !imageUrl) {
-        return res.status(400).send({ status: 'error', message: '"to" and "imageUrl" are required.' });
-    }
-
-    try {
-        const media = await MessageMedia.fromUrl(imageUrl, { unsafeMime: true });
-        await client.sendMessage(to, media, { caption: caption || '' });
-        res.status(200).send({ status: 'success', message: 'Image sent successfully.' });
-    } catch (error) {
-        console.error("Error sending image:", error.message);
-        res.status(500).send({ status: 'error', message: 'Failed to send image.' });
-    }
-});
-
-/**
- * @description Reacts to a specific message with an emoji.
- * @param {string} messageId - The serialized ID of the message to react to.
- * @param {string} emoji - The emoji to react with.
- */
-app.post('/react-to-message', async (req, res) => {
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey !== GATEWAY_API_KEY) {
-        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
-    }
-
-    const { messageId, emoji } = req.body;
-    if (!messageId || !emoji) {
-        return res.status(400).send({ status: 'error', message: '"messageId" and "emoji" are required.' });
-    }
-
-    try {
-        const messageToReact = await client.getMessageById(messageId);
-        if (messageToReact) {
-            await messageToReact.react(emoji);
-            res.status(200).send({ status: 'success', message: 'Reaction sent.' });
-        } else {
-            res.status(404).send({ status: 'error', message: 'Original message not found.' });
-        }
-    } catch (error) {
-        console.error("Error sending reaction:", error.message);
-        res.status(500).send({ status: 'error', message: 'Failed to send reaction.' });
-    }
-});
-
-/**
- * @description Sets the chat state to "typing...".
- * @param {string} chatId - The chat ID where the typing state should be shown.
- */
-app.post('/set-typing-status', async (req, res) => {
-    const apiKey = req.headers['x-api-key'];
-    if (apiKey !== GATEWAY_API_KEY) {
-        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
-    }
-
-    const { chatId } = req.body;
-    if (!chatId) {
-        return res.status(400).send({ status: 'error', message: 'Parameter "chatId" is required.' });
-    }
-
-    try {
-        const chat = await client.getChatById(chatId);
-        await chat.sendStateTyping();
-        res.status(200).send({ status: 'success', message: 'Typing status set.' });
-    } catch (error) {
-        console.error("Error setting typing state:", error.message);
-        res.status(500).send({ status: 'error', message: 'Failed to set typing status.' });
-    }
-});
-
-
-// --- Start the Gateway Server ---
-app.listen(PORT, () => {
-    console.log(`Gateway is listening on port ${PORT}`);
-});
