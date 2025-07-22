@@ -286,22 +286,42 @@ client.on('disconnected', (reason) => {
 client.on('message', async message => {
     if (message.from === 'status@broadcast' || message.author) return;
 
-    console.log(`📨 Message received from ${message.from}: "${message.body}"`);
+    console.log(`📨 Message received from ${message.from}: "${message.body}" (hasMedia: ${message.hasMedia})`);
 
     try {
-        await axios.post(N8N_WEBHOOK_URL, {
+        let payload = {
             from: message.from,
             text: message.body,
             messageId: message.id._serialized,
             timestamp: message.timestamp,
             hasMedia: message.hasMedia,
             type: message.type
-        }, {
+        };
+
+        // Add media info if present
+        if (message.hasMedia) {
+            console.log(`🖼️ Downloading media for message ${message.id._serialized}`);
+            try {
+                const media = await message.downloadMedia();
+                payload.mediaUrl = `data:${media.mimetype};base64,${media.data}`;
+                payload.caption = message.body || '';
+                payload.filename = media.filename || `media.${media.mimetype.split('/')[1]}`;
+                payload.mimeType = media.mimetype;
+                payload.mediaSize = media.data ? media.data.length : 0;
+                
+                console.log(`📎 Media downloaded: ${media.mimetype}, size: ${payload.mediaSize} bytes`);
+            } catch (mediaError) {
+                console.error('❌ Error downloading media:', mediaError);
+                payload.mediaError = mediaError.message;
+            }
+        }
+
+        await axios.post(N8N_WEBHOOK_URL, payload, {
             headers: { 'X-API-Key': GATEWAY_API_KEY },
-            timeout: 10000 // 10 second timeout
+            timeout: 30000 // Increased timeout for media downloads
         });
         
-        console.log(`📤 Message forwarded to n8n successfully`);
+        console.log(`📤 Message ${message.hasMedia ? 'with media ' : ''}forwarded to n8n successfully`);
     } catch (error) {
         console.error("❌ Error forwarding message to n8n:", error.message);
         if (error.response) {
