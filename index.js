@@ -13,6 +13,8 @@ const multer = require('multer');
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
 const GATEWAY_API_KEY = process.env.GATEWAY_API_KEY;
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';  // Bind to all interfaces
+const PUBLIC_URL = process.env.PUBLIC_URL || `http://localhost:${PORT}`;  // External URL
 const SESSION_PATH = process.env.SESSION_PATH || './wweb_session';
 
 if (!N8N_WEBHOOK_URL || !GATEWAY_API_KEY) {
