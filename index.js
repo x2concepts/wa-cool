@@ -1,4 +1,4 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const express = require('express');
 const bodyParser = require('body-parser');
 const qrcode = require('qrcode-terminal');
@@ -59,8 +59,9 @@ client.on('message', async message => {
     try {
         // Forward the relevant data to the n8n webhook
         await axios.post(N8N_WEBHOOK_URL, {
-            from: message.from, // e.g., 447123456789@c.us
-            text: message.body
+            from: message.from, // e.g., 31612345678@c.us
+            text: message.body,
+            messageId: message.id._serialized // IMPORTANT: Forward the messageId for replies/reactions
         }, {
             headers: { 'X-API-Key': GATEWAY_API_KEY } // Secure the webhook
         });
@@ -72,9 +73,16 @@ client.on('message', async message => {
 client.initialize();
 
 
-// --- API Endpoint for n8n to send messages ---
+// ===================================================================================
+// --- API Endpoints for n8n ---
+// ===================================================================================
+
+/**
+ * @description Sends a simple text message.
+ * @param {string} to - The chat ID (e.g., 31612345678@c.us)
+ * @param {string} text - The message content.
+ */
 app.post('/send-message', async (req, res) => {
-    // Secure the endpoint with the same API key
     const apiKey = req.headers['x-api-key'];
     if (apiKey !== GATEWAY_API_KEY) {
         return res.status(401).send({ status: 'error', message: 'Unauthorized' });
@@ -94,6 +102,121 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
+/**
+ * @description Sends a reply to a specific message.
+ * @param {string} messageId - The serialized ID of the message to reply to.
+ * @param {string} text - The reply content.
+ */
+app.post('/reply-to-message', async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey !== GATEWAY_API_KEY) {
+        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
+    }
+
+    const { messageId, text } = req.body;
+    if (!messageId || !text) {
+        return res.status(400).send({ status: 'error', message: 'Parameters "messageId" and "text" are required.' });
+    }
+
+    try {
+        const messageToReply = await client.getMessageById(messageId);
+        if (messageToReply) {
+            await messageToReply.reply(text);
+            res.status(200).send({ status: 'success', message: 'Reply sent successfully.' });
+        } else {
+            res.status(404).send({ status: 'error', message: 'Original message not found.' });
+        }
+    } catch (error) {
+        console.error("Error sending reply:", error.message);
+        res.status(500).send({ status: 'error', message: 'Failed to send reply.' });
+    }
+});
+
+
+/**
+ * @description Sends an image from a URL with an optional caption.
+ * @param {string} to - The chat ID.
+ * @param {string} imageUrl - The public URL of the image to send.
+ * @param {string} [caption] - Optional text to send with the image.
+ */
+app.post('/send-image', async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey !== GATEWAY_API_KEY) {
+        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
+    }
+
+    const { to, imageUrl, caption } = req.body;
+    if (!to || !imageUrl) {
+        return res.status(400).send({ status: 'error', message: '"to" and "imageUrl" are required.' });
+    }
+
+    try {
+        const media = await MessageMedia.fromUrl(imageUrl, { unsafeMime: true });
+        await client.sendMessage(to, media, { caption: caption || '' });
+        res.status(200).send({ status: 'success', message: 'Image sent successfully.' });
+    } catch (error) {
+        console.error("Error sending image:", error.message);
+        res.status(500).send({ status: 'error', message: 'Failed to send image.' });
+    }
+});
+
+/**
+ * @description Reacts to a specific message with an emoji.
+ * @param {string} messageId - The serialized ID of the message to react to.
+ * @param {string} emoji - The emoji to react with.
+ */
+app.post('/react-to-message', async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey !== GATEWAY_API_KEY) {
+        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
+    }
+
+    const { messageId, emoji } = req.body;
+    if (!messageId || !emoji) {
+        return res.status(400).send({ status: 'error', message: '"messageId" and "emoji" are required.' });
+    }
+
+    try {
+        const messageToReact = await client.getMessageById(messageId);
+        if (messageToReact) {
+            await messageToReact.react(emoji);
+            res.status(200).send({ status: 'success', message: 'Reaction sent.' });
+        } else {
+            res.status(404).send({ status: 'error', message: 'Original message not found.' });
+        }
+    } catch (error) {
+        console.error("Error sending reaction:", error.message);
+        res.status(500).send({ status: 'error', message: 'Failed to send reaction.' });
+    }
+});
+
+/**
+ * @description Sets the chat state to "typing...".
+ * @param {string} chatId - The chat ID where the typing state should be shown.
+ */
+app.post('/set-typing-status', async (req, res) => {
+    const apiKey = req.headers['x-api-key'];
+    if (apiKey !== GATEWAY_API_KEY) {
+        return res.status(401).send({ status: 'error', message: 'Unauthorized' });
+    }
+
+    const { chatId } = req.body;
+    if (!chatId) {
+        return res.status(400).send({ status: 'error', message: 'Parameter "chatId" is required.' });
+    }
+
+    try {
+        const chat = await client.getChatById(chatId);
+        await chat.sendStateTyping();
+        res.status(200).send({ status: 'success', message: 'Typing status set.' });
+    } catch (error) {
+        console.error("Error setting typing state:", error.message);
+        res.status(500).send({ status: 'error', message: 'Failed to set typing status.' });
+    }
+});
+
+
+// --- Start the Gateway Server ---
 app.listen(PORT, () => {
     console.log(`Gateway is listening on port ${PORT}`);
 });
